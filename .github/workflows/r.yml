@@ -1,4 +1,4 @@
-name: Update Release Notes with SHA256 Checksums
+name: Release with SHA256 Checksums
 
 on:
   release:
@@ -7,11 +7,13 @@ on:
 jobs:
   update-release-notes:
     runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v2
 
+    steps:
+      # Step 1: Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Get release assets (files) for the current release
       - name: Get release assets
         id: assets
         run: |
@@ -21,6 +23,7 @@ jobs:
           assets=$(curl -s $assets_url | jq -r '.assets[] | .browser_download_url')
           echo "::set-output name=assets::$assets"
 
+      # Step 3: Calculate SHA256 checksums for each asset
       - name: Calculate SHA256 checksums for assets
         id: checksum
         run: |
@@ -37,20 +40,36 @@ jobs:
           done
           echo "::set-output name=sha256s::${sha256s[@]}"
 
-      - name: Append SHA256 table to release notes
+      # Step 4: Fetch the current release body (to append to it)
+      - name: Fetch current release body
+        id: get-release-body
         run: |
-          sha256_table="| Filename | SHA256 Checksum |\n| --- | --- |\n${{ steps.checksum.outputs.sha256s }}"
           release_body=$(curl -s -X GET -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }} | \
             jq -r '.body')
-          updated_body="${release_body}\n\n### SHA256 Checksums\n$sha256_table"
-          echo "Updated release notes: $updated_body"
+          echo "::set-output name=release_body::$release_body"
 
-      - name: Update release notes with checksum table
+      # Step 5: Create the SHA256 table in Markdown format
+      - name: Create SHA256 table
+        id: create-sha256-table
         run: |
-          release_id=$(curl -s -X GET -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }} | \
-            jq -r '.id')
-          curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -d "{\"body\": \"$updated_body\"}" \
-            https://api.github.com/repos/${{ github.repository }}/releases/$release_id
+          sha256_table="| Filename | SHA256 Checksum |\n| --- | --- |\n${{ steps.checksum.outputs.sha256s }}"
+          echo "::set-output name=sha256_table::$sha256_table"
+
+      # Step 6: Append the SHA256 table to the current release notes
+      - name: Append SHA256 table to release notes
+        run: |
+          release_body="${{ steps.get-release-body.outputs.release_body }}"
+          sha256_table="${{ steps.create-sha256-table.outputs.sha256_table }}"
+          updated_body="$release_body\n\n### SHA256 Checksums\n$sha256_table"
+          echo "::set-output name=updated_body::$updated_body"
+
+      # Step 7: Upload release assets using softprops/action-gh-release
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.assets.outputs.assets }}
+          body: ${{ steps.append-sha256-table.outputs.updated_body }}
+          tag_name: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
